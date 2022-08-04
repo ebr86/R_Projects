@@ -1,0 +1,369 @@
+---
+title: "Tree-Based Models"
+subtitle: Ebrahim Ahmadinia
+date: "2021"
+output:
+  html_document:
+    theme: cosmo
+    toc: yes
+    toc_float: true
+  html_notebook: 
+    theme: journal
+    toc: true
+    toc_float: true
+  pdf_document:
+    keep_tex: yes
+    latex_engine: xelatex
+fontsize: 12pt
+---
+
+## Introduction
+
+-   Tree-based models can be useful classifiers or local regression models especially when your data attributes have natural breaks in them. Decision trees and especially ensembles thereof are widely used in modern machine learning and data science projects.
+
+## Example: World Development Indicators Revisited
+
+We start by clearing the current environment and setting a new working directory. We then load a number of additional libraries:
+
+```{r}
+# Clean
+graphics.off()
+rm(list = ls(all = TRUE))
+
+# Set working directory
+setwd("C:/Users/EbiChess/Desktop/U_2021_DA/Lab6_Ex")
+
+# Load libraries
+library(tidyverse)
+```
+
+```{r, include=FALSE}
+# Global document options
+knitr::opts_chunk$set(root.dir = "C:/Users/EbiChess/Desktop/U_2021_DA/Lab6_Ex")
+```
+
+### Explore the data
+
+We use open-access data on the **World Development Indicators (WDI)** published by the World Bank (<https://databank.worldbank.org/reports.aspx?source=world-development-indicators>). This website offers an interactive frontend to select, organize, and visualize hundreds of economic, social, and environmental indicators that are aggregated by nation and year. Here we use a subset of these data concerned with the subgroup labeled *Environment*.
+
+```{r}
+wdi <- read_csv("WDI-09Dec2021.csv")
+```
+
+Assuming that we are already familiar with the data from our previous lab, we now subset the data by **regional income** status. We only consider attributes that are at least 75% complete:
+
+```{r}
+# Extract only regional data with "income" label
+income <- wdi[grep("income", wdi$`Country Name`), ]
+
+# Select only complete column entries
+incomedata <- income %>% 
+  select_if(~ is.numeric(.x) & mean(!is.na(.x)) >= 0.75)
+
+# Paste together to retain region names
+income <- cbind(income$`Country Name`, incomedata)
+names(income)[1] <- "Country Name"
+
+head(income)
+```
+
+We have quite bulky variable names and might thus prefer the abbreviations given in the `[...]` parentheses in each column. We use a **regular expression** (a sequence of characters that defines a search pattern) to extract these abbreviated variable names:
+
+```{r}
+str_extract(names(income), 
+            pattern = "(?<=\\[).*(?=\\])")
+```
+
+Do not worry about the seemingly cryptic `pattern` argument. Learning to write regular expression is an art in itself and part of many programming languages (typing `?regex` into the console will give you a first overview). We use these abbreviations to slim down our column names:
+
+```{r}
+names(income) <- str_extract(names(income), 
+            pattern = "(?<=\\[).*(?=\\])")
+names(income)[1:2] <- c("Region", "Year")
+
+head(income)
+```
+
+### CART A: Classification Tree
+
+We need to install and load the library `rpart` for learning our decision tree models. The library `rpart.plot` helps to improve the graphical output of our tree-based models:
+
+```{r}
+library(rpart)
+library(rpart.plot)
+```
+
+In our first analysis, we select the income regions as our **target** variable in a **classification tree**. We choose two **predictor** variables (annual cereal yield and CO$_2$ emissions) to start with.
+
+```{r}
+ggplot(aes(x = AG.YLD.CREL.KG, 
+           y = EN.ATM.CO2E.PC, 
+           col = Region),
+       data = income) +
+  geom_point()
+```
+
+Note that some of the data seem to be correlated. Now do these two predictors allow us to meaningfully distinguish between income regions? 
+
+```{r}
+tree1 <- rpart(Region ~ AG.YLD.CREL.KG + EN.ATM.CO2E.PC, 
+  method = "class",
+  data = income)
+```
+
+We can now plot the model output. The package `rpart.plot` offers some routines such as `prp()` to make the graphical output a bit more legible. 
+
+Before we plot the model, however, we **prune** the tree to make it less complex. We need to specify a criterion for pruning that we pass to the `cp` argument, which represents a complexity parameter:
+
+```{r}
+# Prune tree
+p_tree1 <- prune(tree1, 
+                 cp = tree1$cptable[which.min(tree1$cptable[ , "xerror"]), "CP"])
+
+# Plot tree
+prp(p_tree1,
+    varlen = 0,  # type ?prp to learn more about these arguments
+    faclen = 0,
+    extra = 1,
+    roundint = F,
+    digits = 2)
+```
+
+
+
+### CART B: Regression Tree
+
+In the next step, we use the `rpart()` command to learn a **regression tree**. All we need to specify is a new (continuous) response variable and the `method`, which is now ANOVA: regression trees base their split criteria on minimizing the variance.
+
+In this example, we model the agricultural productivity in terms of area-specific cereal yield per year for high-income regions only:
+
+```{r}
+# Subset to complete data
+hiincome <- income %>% 
+  filter(Region == "High income",
+         !is.na(AG.YLD.CREL.KG))
+
+# Learn tree
+tree2 <- rpart(AG.YLD.CREL.KG ~ Year, 
+  method = "anova",
+  data = hiincome)
+
+# Prune tree
+p_tree2 <- prune(tree2,
+                 cp = tree2$cptable[which.min(tree2$cptable[ , "xerror"]), "CP"])
+
+# Add predictions to data
+hiincome$pred <- predict(tree2)
+
+# Plot tree
+prp(p_tree2,
+    varlen = 0,
+    faclen = 0,
+    extra = 1,
+    roundint = F,
+    digits = 2)
+```
+
+We now plot the data and add the split points that the tree model has learned:
+
+```{r}
+ggplot(data = hiincome,
+       aes(x = Year,
+           y = AG.YLD.CREL.KG)) +
+  geom_point() +  # observed data
+  geom_line(data = hiincome,  
+       aes(x = Year,
+           y = pred), col = "red") + # predictions
+  geom_vline(xintercept = tree2$splits[ , 4], col = "purple", lty = 2) +
+  labs(title = "Cereal yield (kg/ha) [AG.YLD.CREL.KG] \n 
+       High Income, 1960-2020")
+```
+
+In this example, the purple vertical lines separate several periods that the tree model has identified. The predicted means per period are the red horizontal line; ignore the spurious "steep risers" between the steps: the model only predicts mean values for each period. To appreciate the splitting rule, let us compare the split locations with the mean of `Year` that we weight by `AG.YLD.CREL.KG`:
+
+```{r}
+# Split locations
+tree2$splits
+
+# Weighted mean
+weighted.mean(hiincome$Year, hiincome$AG.YLD.CREL.KG)
+```
+
+We can see that the first split decision was made very close to the mean of our predictor if weighted by the target values.
+
+### Jackknife and Bootstrap
+
+Before looking at a more advanced use of decision trees within an ensemble-based method, we look at the effect of **randomly permuting** our data set.
+
+For example, what was the average emission of CO$_2$ per capita in high-income countries between 1980 and 2015?
+
+```{r}
+dat <- income %>% 
+  filter(Region == "High income", 
+         Year > 1980,
+         Year <= 2015) %>%
+    select(EN.ATM.CO2E.PC)
+
+mean(dat$EN.ATM.CO2E.PC)
+```
+
+this average estimate is linked to the lowest variance in the data by definition. If we were to decide on how to best split a continuous variable like emission of CO$_2$ per capita in a regression tree node, we would most likely do this at the mean value of the variable.
+
+How **robust** is this estimate if we change the data, e.g. by adding new data or acknowledging incomplete observations, or leaving out even a single data point? The **jackknife** is a method that systematically explores this by leaving out a single data point and computing the resulting *n* estimates for *n* data points. In our example we can compute as many means as we have observations; each of these means is based on the entire data set minus one observation for a given year. This procedure is also known as **leave-one-out validation**:
+
+```{r}
+# Jackknife
+for(i in 1:nrow(dat)) {
+  print(mean(dat$EN.ATM.CO2E.PC[-i]))
+}
+```
+
+We can plot these estimates in a histogram:
+
+```{r}
+dat_kackknife <- rep(NA, nrow(dat))
+for(i in 1:nrow(dat)) {
+  dat_kackknife[i] <- mean(dat$EN.ATM.CO2E.PC[-i])
+}
+
+hist(dat_kackknife, 
+     col = "gold",
+     xlab = "Jacknife estimated mean",
+     main = "CO2 emissions (t/capita) [EN.ATM.CO2E.PC], 1980-2015")
+```
+
+The **bootstrap** is a related method that samples a fraction of the data with replacement many times, thus generating many new synthetic data set that reflect effects of missing out or having redundant data. The simple bootstrap usually considers 2/3 of all data in a given random draw. Let us estimate the mean based on 1000 bootstrap iterations:
+
+```{r}
+# Bootstrap
+dat_bootstrap <- rep(NA, 1000)
+for(i in 1:length(dat_bootstrap)) {
+  dat_bootstrap[i] <- mean(sample(dat$EN.ATM.CO2E.PC, 
+                                  size = 2/3 * nrow(dat), 
+                                  replace = TRUE))
+}
+
+
+hist(dat_bootstrap, 
+     col = "orange",
+     xlab = "Boostrap estimated mean",
+     main = "CO2 emissions (t/capita) [EN.ATM.CO2E.PC], 1980-2015")
+```
+
+This method gives a more balanced estimate of the mean owing to the high number of random permutations of our data subset. Note that bootstrapping comes in many flavors, but nonetheless forms an important foundation for many state-of-the-art data analyses.
+
+### Random Forest
+
+Random forests merge the concepts of decision tree learning and bootstrapping. Random forests are entire ensembles of decision trees that are learned from randomly permuted data observations and attributes. The final decision is achieved by an average vote across all individual trees. Random forests are flexible and powerful algorithms that find a lot of applications in many scientific fields today. In practice, Random forests may need a lot of tuning and testing to achieve optimal results.
+
+To keep things simple, we investigate mostly the default cases. We need to install and load the `randomForest` library first:
+
+```{r}
+library(randomForest)
+```
+
+The Random forest algorithm in this library requires that we have data with **non-missing observations**. To guarantee this, we subset our data to the 1990s:
+
+```{r}
+# Needs complete cases only
+income90s <- income %>% 
+  filter(Year > 1990 & Year <= 2000) 
+
+income90sdata <- income90s %>% 
+  select_if(~ is.numeric(.x) & mean(!is.na(.x)) == 1)
+
+# Paste together to retain region names
+income90s <- cbind(income90s$Region, income90sdata)
+names(income90s)[1] <- "Region"
+```
+
+It is also standard to subset our data into randomly selected (and mutually exclusive) **training and testing sets**:
+
+```{r}
+# Subset data to training and testing sets
+splitid <- sample.int(nrow(income90s), 
+                      round(nrow(income90s) * 2 / 3)) 
+traindata <- income90s[splitid, ]
+testdata <- income90s[-splitid, ]
+```
+
+> The idea of splitting data into training and testing subsets is to reduce the risk of overfitting. This is a standard approach in most modern data analyses. In many applications, these subsets may also vary either randomly or systematically in a method called **cross-validation**.
+
+The model building step follows the general syntax of most models in **R**. In the following, we train a Random forest to **classify** the income region by all the remaining predictors in our training data.
+
+```{r}
+# Learn random forest classifier from training data
+rforest1 <- randomForest(factor(Region) ~ . ,
+                         data = traindata,
+                         importance = TRUE,
+                         keep.forest = TRUE
+                         )
+```
+
+One advantage of Random forests is that they can estimate the **relative importance** of all predictors in terms of how much they contribute to reducing the overall accuracy. This estimate is possible because the method uses many instead of a single tree. We can thus construct a **variable importance** plot:
+
+```{r}
+varImpPlot(rforest1, type = 1, pch = 19, cex = 0.5, main = "")
+```
+
+The model object also contains the **confusion matrix** (note that you could use other performance metrics such as the area under the receiver-operating characteristic curve AUROC as well):
+
+```{r}
+rforest1$confusion
+```
+
+This confusion matrix is quite difficult to read because we have many classes. Here is a suggestion to visualize the confusion matrix:
+
+```{r,fig.height=4}
+# Extract information about confusion matrix and clean for plotting
+confraw <- rforest1$confusion[ , -ncol(rforest1$confusion)]
+confmat <- expand.grid(rownames(confraw), 
+                       colnames(confraw))
+confmat$Count <- as.numeric(confraw)
+
+# Plot confusion matrix
+ggplot(confmat, 
+       aes(x = Var2, y = Var1)) +
+  geom_tile(aes(fill = Count), colour = "white") +
+  geom_text(aes(label = sprintf("%1.0f", Count)), vjust = 1) +
+  scale_fill_gradient(low = "purple", high = "orange") +
+  theme_bw() + 
+  theme(legend.position = "none",
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+```
+
+In the next step, we use the Random forest for **regression** and model annual CO$_2$ emissions from all other remaining predictors:
+
+```{r}
+# Learn random forest regression from training data
+rforest2 <- randomForest(EN.ATM.CO2E.PC ~ . ,
+                         data = traindata,
+                         importance = TRUE,
+                         keep.forest = TRUE
+                         )
+```
+
+Again, we can check the variable importance:
+
+```{r}
+varImpPlot(rforest2, type = 1, pch = 19, cex = 0.5, main = "")
+```
+
+We then use the model to obtain a prediction and compare this to the remaining testing data:
+
+```{r}
+# Predict the outcome of the testing data
+testdata$pred <- predict(rforest2, newdata = testdata)
+
+# Plot with 1:1 line
+ggplot(testdata, aes(x = EN.ATM.CO2E.PC,
+                     y = pred)) +
+  geom_point() +
+  labs(x = "Observed", 
+       y = "Predicted by Random Forest", 
+       title = "CO2 emissions (t/capita) [EN.ATM.CO2E.PC], 1990-2000") +
+  geom_abline(intercept = 0, slope = 1, lty = 2, col = "red")
+```
+
